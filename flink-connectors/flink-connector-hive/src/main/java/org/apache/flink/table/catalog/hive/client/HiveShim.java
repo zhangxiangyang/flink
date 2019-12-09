@@ -18,31 +18,44 @@
 
 package org.apache.flink.table.catalog.hive.client;
 
+import org.apache.flink.table.api.constraints.UniqueConstraint;
+import org.apache.flink.table.catalog.stats.CatalogColumnStatisticsDataDate;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
-import org.apache.hadoop.hive.metastore.api.Function;
+import org.apache.hadoop.hive.metastore.api.ColumnStatisticsData;
+import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.InvalidOperationException;
 import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.UnknownDBException;
+import org.apache.hadoop.hive.ql.exec.FileSinkOperator;
+import org.apache.hadoop.hive.ql.exec.FunctionInfo;
 import org.apache.hadoop.hive.ql.udf.generic.SimpleGenericUDAFParameterInfo;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
+import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
+import org.apache.hadoop.io.Writable;
+import org.apache.hadoop.mapred.JobConf;
 import org.apache.thrift.TException;
 
 import java.io.IOException;
+import java.io.Serializable;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Properties;
+import java.util.Set;
 
 /**
  * A shim layer to support different versions of Hive.
  */
-public interface HiveShim {
+public interface HiveShim extends Serializable {
 
 	/**
 	 * Create a Hive Metastore client based on the given HiveConf object.
@@ -62,18 +75,6 @@ public interface HiveShim {
 	 * @throws TException         for any other generic exceptions caused by Thrift
 	 */
 	List<String> getViews(IMetaStoreClient client, String databaseName) throws UnknownDBException, TException;
-
-	/**
-	 * Gets a function from a database with the given HMS client.
-	 *
-	 * @param client       the Hive Metastore client
-	 * @param dbName       name of the database
-	 * @param functionName name of the function
-	 * @return the Function under the specified name
-	 * @throws NoSuchObjectException if the function doesn't exist
-	 * @throws TException            for any other generic exceptions caused by Thrift
-	 */
-	Function getFunction(IMetaStoreClient client, String dbName, String functionName) throws NoSuchObjectException, TException;
 
 	/**
 	 * Moves a particular file or directory to trash.
@@ -159,4 +160,65 @@ public interface HiveShim {
 	 */
 	void makeSpecFromName(Map<String, String> partSpec, Path currPath);
 
+	/**
+	 * Get ObjectInspector for a constant value.
+	 */
+	ObjectInspector getObjectInspectorForConstant(PrimitiveTypeInfo primitiveTypeInfo, Object value);
+
+	/**
+	 * Generate Hive ColumnStatisticsData from Flink CatalogColumnStatisticsDataDate for DATE columns.
+	 */
+	ColumnStatisticsData toHiveDateColStats(CatalogColumnStatisticsDataDate flinkDateColStats);
+
+	/**
+	 * Whether a Hive ColumnStatisticsData is for DATE columns.
+	 */
+	boolean isDateStats(ColumnStatisticsData colStatsData);
+
+	/**
+	 * Generate Flink CatalogColumnStatisticsDataDate from Hive ColumnStatisticsData for DATE columns.
+	 */
+	CatalogColumnStatisticsDataDate toFlinkDateColStats(ColumnStatisticsData hiveDateColStats);
+
+	/**
+	 * Get Hive's FileSinkOperator.RecordWriter.
+	 */
+	FileSinkOperator.RecordWriter getHiveRecordWriter(JobConf jobConf, String outputFormatClzName,
+			Class<? extends Writable> outValClz, boolean isCompressed, Properties tableProps, Path outPath);
+
+	/**
+	 * Get Hive table schema from deserializer.
+	 */
+	List<FieldSchema> getFieldsFromDeserializer(Configuration conf, Table table, boolean skipConfError);
+
+	/**
+	 * List names of all built-in functions.
+	 */
+	Set<String> listBuiltInFunctions();
+
+	/**
+	 * Get a Hive built-in function by name.
+	 */
+	Optional<FunctionInfo> getBuiltInFunctionInfo(String name);
+
+	/**
+	 * Get the set of columns that have NOT NULL constraints.
+	 */
+	Set<String> getNotNullColumns(IMetaStoreClient client, Configuration conf, String dbName, String tableName);
+
+	/**
+	 * Get the primary key of a Hive table and convert it to a UniqueConstraint. Return empty if the table
+	 * doesn't have a primary key, or the constraint doesn't satisfy the desired trait, e.g. RELY.
+	 */
+	Optional<UniqueConstraint> getPrimaryKey(IMetaStoreClient client, String dbName, String tableName, byte requiredTrait);
+
+	/**
+	 * Converts a Flink timestamp instance to what's expected by Hive.
+	 */
+	Object toHiveTimestamp(Object flinkTimestamp);
+
+	/**
+	 * Converts a hive timestamp instance to LocalDateTime which is expected by DataFormatConverter.
+	 */
+	LocalDateTime toFlinkTimestamp(Object hiveTimestamp);
 }

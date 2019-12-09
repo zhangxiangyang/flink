@@ -35,7 +35,6 @@ import org.apache.flink.runtime.rest.messages.ClusterOverviewHeaders;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerInfo;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagersHeaders;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagersInfo;
-import org.apache.flink.runtime.taskmanager.NettyShuffleEnvironmentConfiguration;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
 import org.apache.flink.test.testdata.WordCountData;
 import org.apache.flink.util.ExceptionUtils;
@@ -173,7 +172,6 @@ public class YARNSessionCapacitySchedulerITCase extends YarnTestBase {
 					"-yj", flinkUberjar.getAbsolutePath(),
 					"-yt", flinkLibFolder.getAbsolutePath(),
 					"-yt", flinkShadedHadoopDir.getAbsolutePath(),
-					"-yn", "1",
 					"-ys", "2", //test that the job is executed with a DOP of 2
 					"-yjm", "768m",
 					"-ytm", "1024m", exampleJarLocation.getAbsolutePath()},
@@ -204,27 +202,15 @@ public class YARNSessionCapacitySchedulerITCase extends YarnTestBase {
 
 			// set memory constraints (otherwise this is the same test as perJobYarnCluster() above)
 			final long taskManagerMemoryMB = 1024;
-			//noinspection NumericOverflow if the calculation of the total Java memory size overflows, default configuration parameters are wrong in the first place, so we can ignore this inspection
-			final long networkBuffersMB = NettyShuffleEnvironmentConfiguration.calculateNetworkBufferMemory(
-				(taskManagerMemoryMB - ResourceManagerOptions.CONTAINERIZED_HEAP_CUTOFF_MIN.defaultValue()) << 20,
-				new Configuration()) >> 20;
-			final long offHeapMemory = taskManagerMemoryMB
-				- ResourceManagerOptions.CONTAINERIZED_HEAP_CUTOFF_MIN.defaultValue()
-				// cutoff memory (will be added automatically)
-				- networkBuffersMB // amount of memory used for network buffers
-				- 100; // reserve something for the Java heap space
 
 			runWithArgs(new String[]{"run", "-m", "yarn-cluster",
 					"-yj", flinkUberjar.getAbsolutePath(),
 					"-yt", flinkLibFolder.getAbsolutePath(),
 					"-yt", flinkShadedHadoopDir.getAbsolutePath(),
-					"-yn", "1",
 					"-ys", "2", //test that the job is executed with a DOP of 2
 					"-yjm", "768m",
 					"-ytm", taskManagerMemoryMB + "m",
-					"-yD", "taskmanager.memory.off-heap=true",
-					"-yD", "taskmanager.memory.size=" + offHeapMemory + "m",
-					"-yD", "taskmanager.memory.preallocate=true", exampleJarLocation.getAbsolutePath()},
+					exampleJarLocation.getAbsolutePath()},
 				/* test succeeded after this string */
 				"Program execution finished",
 				/* prohibited strings: (to verify the parallelism) */
@@ -397,12 +383,11 @@ public class YARNSessionCapacitySchedulerITCase extends YarnTestBase {
 	public void testNonexistingQueueWARNmessage() throws Exception {
 		runTest(() -> {
 			LOG.info("Starting testNonexistingQueueWARNmessage()");
-			addTestAppender(AbstractYarnClusterDescriptor.class, Level.WARN);
+			addTestAppender(YarnClusterDescriptor.class, Level.WARN);
 			try {
 				runWithArgs(new String[]{"-j", flinkUberjar.getAbsolutePath(),
 					"-t", flinkLibFolder.getAbsolutePath(),
 					"-t", flinkShadedHadoopDir.getAbsolutePath(),
-					"-n", "1",
 					"-jm", "768m",
 					"-tm", "1024m",
 					"-qu", "doesntExist"}, "to unknown queue: doesntExist", null, RunTypes.YARN_SESSION, 1);
@@ -431,7 +416,6 @@ public class YARNSessionCapacitySchedulerITCase extends YarnTestBase {
 					"-yj", flinkUberjar.getAbsolutePath(),
 					"-yt", flinkLibFolder.getAbsolutePath(),
 					"-yt", flinkShadedHadoopDir.getAbsolutePath(),
-					"-yn", "1",
 					"-ys", "2",
 					"-yjm", "768m",
 					"-ytm", "1024m", exampleJarLocation.getAbsolutePath()},
@@ -505,7 +489,6 @@ public class YARNSessionCapacitySchedulerITCase extends YarnTestBase {
 				"-yj", flinkUberjar.getAbsolutePath(),
 				"-yt", flinkLibFolder.getAbsolutePath(),
 				"-yt", flinkShadedHadoopDir.getAbsolutePath(),
-				"-yn", "1",
 				"-yjm", "768m",
 				// test if the cutoff is passed correctly (only useful when larger than the value
 				// of containerized.heap-cutoff-min (default: 600MB)

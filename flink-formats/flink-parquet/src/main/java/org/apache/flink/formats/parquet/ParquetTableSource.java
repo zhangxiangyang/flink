@@ -66,6 +66,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -223,7 +224,8 @@ public class ParquetTableSource
 	@Override
 	public String explainSource() {
 		return "ParquetFile[path=" + path + ", schema=" + parquetSchema + ", filter=" + predicateString()
-			+ ", typeInfo=" + typeInfo + "]";
+			+ ", typeInfo=" + typeInfo + ", selectedFields=" + Arrays.toString(selectedFields)
+			+ ", pushDownStatus=" + isFilterPushedDown + "]";
 	}
 
 	private String predicateString() {
@@ -319,7 +321,7 @@ public class ParquetTableSource
 			}
 		} else if (exp instanceof BinaryExpression) {
 			if (exp instanceof And) {
-				LOG.debug("All of the predicates should be in CNF. Found an AND expression.", exp);
+				LOG.debug("All of the predicates should be in CNF. Found an AND expression: {}.", exp);
 			} else if (exp instanceof Or) {
 				FilterPredicate c1 = toParquetPredicate(((Or) exp).left());
 				FilterPredicate c2 = toParquetPredicate(((Or) exp).right());

@@ -32,7 +32,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 
 import static org.apache.flink.runtime.io.network.buffer.BufferBuilderTestUtils.buildSomeBuffer;
-import static org.apache.flink.runtime.io.network.buffer.BufferBuilderTestUtils.createFilledBufferConsumer;
+import static org.apache.flink.runtime.io.network.buffer.BufferBuilderTestUtils.createFilledFinishedBufferConsumer;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -137,8 +137,8 @@ public class FileChannelBoundedDataTest extends BoundedDataTestBase {
 		listener.resetAvailable();
 		assertFalse(listener.isAvailable);
 
-		final BufferAndBacklog buffer1 = subpartitionView.getNextBuffer();
-		final BufferAndBacklog buffer2 = subpartitionView.getNextBuffer();
+		final BufferAndBacklog buffer1 = subpartitionView.getNextBuffer(true);
+		final BufferAndBacklog buffer2 = subpartitionView.getNextBuffer(true);
 		assertNotNull(buffer1);
 		assertNotNull(buffer2);
 
@@ -173,7 +173,7 @@ public class FileChannelBoundedDataTest extends BoundedDataTestBase {
 
 	private static void writeBuffers(ResultSubpartition subpartition, int numberOfBuffers) throws IOException {
 		for (int i = 0; i < numberOfBuffers; i++) {
-			subpartition.add(createFilledBufferConsumer(BUFFER_SIZE, BUFFER_SIZE));
+			subpartition.add(createFilledFinishedBufferConsumer(BUFFER_SIZE));
 		}
 		subpartition.finish();
 	}
