@@ -86,6 +86,7 @@ import org.apache.hadoop.hive.metastore.api.PrincipalType;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.UnknownDBException;
+import org.apache.hadoop.hive.metastore.partition.spec.PartitionSpecProxy;
 import org.apache.hadoop.hive.ql.io.StorageFormatDescriptor;
 import org.apache.hadoop.hive.ql.io.StorageFormatFactory;
 import org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe;
@@ -356,7 +357,7 @@ public class HiveCatalog extends AbstractCatalog {
 			client.createTable(hiveTable);
 		} catch (AlreadyExistsException e) {
 			if (!ignoreIfExists) {
-				throw new TableAlreadyExistException(getName(), tablePath);
+				throw new TableAlreadyExistException(getName(), tablePath, e);
 			}
 		} catch (TException e) {
 			throw new CatalogException(String.format("Failed to create table %s", tablePath.getFullName()), e);
@@ -513,22 +514,25 @@ public class HiveCatalog extends AbstractCatalog {
 		// Table properties
 		Map<String, String> properties = hiveTable.getParameters();
 
-		boolean isGeneric = Boolean.valueOf(properties.get(CatalogConfig.IS_GENERIC));
-		if (isGeneric) {
-			properties = retrieveFlinkProperties(properties);
+		// When retrieving a table, a generic table needs explicitly have a key is_generic = true
+		// otherwise, this is a Hive table if 1) the key is missing 2) is_generic = false
+		// this is opposite to creating a table. See instantiateHiveTable()
+
+		if (!properties.containsKey(CatalogConfig.IS_GENERIC)) {
+			// must be a hive table
+			properties.put(CatalogConfig.IS_GENERIC, String.valueOf(false));
+		} else {
+			boolean isGeneric = Boolean.valueOf(properties.get(CatalogConfig.IS_GENERIC));
+
+			if (isGeneric) {
+				properties = retrieveFlinkProperties(properties);
+			}
 		}
+
 		String comment = properties.remove(HiveCatalogConfig.COMMENT);
 
 		// Table schema
-		List<FieldSchema> fields;
-		if (org.apache.hadoop.hive.ql.metadata.Table.hasMetastoreBasedSchema(hiveConf,
-				hiveTable.getSd().getSerdeInfo().getSerializationLib())) {
-			// get schema from metastore
-			fields = hiveTable.getSd().getCols();
-		} else {
-			// get schema from deserializer
-			fields = hiveShim.getFieldsFromDeserializer(hiveConf, hiveTable, true);
-		}
+		List<FieldSchema> fields = getNonPartitionFields(hiveConf, hiveTable);
 		Set<String> notNullColumns = client.getNotNullColumns(hiveConf, hiveTable.getDbName(), hiveTable.getTableName());
 		Optional<UniqueConstraint> primaryKey = isView ? Optional.empty() :
 				client.getPrimaryKey(hiveTable.getDbName(), hiveTable.getTableName(), HiveTableUtil.relyConstraint((byte) 0));
@@ -555,7 +559,19 @@ public class HiveCatalog extends AbstractCatalog {
 		}
 	}
 
-	private  static Table instantiateHiveTable(ObjectPath tablePath, CatalogBaseTable table) {
+	private List<FieldSchema> getNonPartitionFields(HiveConf hiveConf, Table hiveTable) {
+		if (org.apache.hadoop.hive.ql.metadata.Table.hasMetastoreBasedSchema(hiveConf,
+				hiveTable.getSd().getSerdeInfo().getSerializationLib())) {
+			// get schema from metastore
+			return hiveTable.getSd().getCols();
+		} else {
+			// get schema from deserializer
+			return hiveShim.getFieldsFromDeserializer(hiveConf, hiveTable, true);
+		}
+	}
+
+	@VisibleForTesting
+	protected static Table instantiateHiveTable(ObjectPath tablePath, CatalogBaseTable table) {
 		// let Hive set default parameters for us, e.g. serialization.format
 		Table hiveTable = org.apache.hadoop.hive.ql.metadata.Table.getEmptyTable(tablePath.getDatabaseName(),
 			tablePath.getObjectName());
@@ -563,13 +579,25 @@ public class HiveCatalog extends AbstractCatalog {
 
 		Map<String, String> properties = new HashMap<>(table.getProperties());
 		// Table comment
-		properties.put(HiveCatalogConfig.COMMENT, table.getComment());
-
-		boolean isGeneric = Boolean.valueOf(properties.get(CatalogConfig.IS_GENERIC));
-
-		if (isGeneric) {
-			properties = maskFlinkProperties(properties);
+		if (table.getComment() != null) {
+			properties.put(HiveCatalogConfig.COMMENT, table.getComment());
 		}
+
+		// When creating a table, A hive table needs explicitly have a key is_generic = false
+		// otherwise, this is a generic table if 1) the key is missing 2) is_generic = true
+		// this is opposite to reading a table and instantiating a CatalogTable. See instantiateCatalogTable()
+		if (!properties.containsKey(CatalogConfig.IS_GENERIC)) {
+			// must be a generic catalog
+			properties.put(CatalogConfig.IS_GENERIC, String.valueOf(true));
+			properties = maskFlinkProperties(properties);
+		} else {
+			boolean isGeneric = Boolean.valueOf(properties.get(CatalogConfig.IS_GENERIC));
+
+			if (isGeneric) {
+				properties = maskFlinkProperties(properties);
+			}
+		}
+
 		// Table properties
 		hiveTable.setParameters(properties);
 
@@ -759,9 +787,35 @@ public class HiveCatalog extends AbstractCatalog {
 	}
 
 	@Override
-	public List<CatalogPartitionSpec> listPartitionsByFilter(ObjectPath tablePath, List<Expression> filters)
+	public List<CatalogPartitionSpec> listPartitionsByFilter(ObjectPath tablePath, List<Expression> expressions)
 			throws TableNotExistException, TableNotPartitionedException, CatalogException {
-		throw new UnsupportedOperationException();
+		Table hiveTable = getHiveTable(tablePath);
+		ensurePartitionedTable(tablePath, hiveTable);
+		List<String> partColNames = getFieldNames(hiveTable.getPartitionKeys());
+		Optional<String> filter = HiveTableUtil.makePartitionFilter(
+				getNonPartitionFields(hiveConf, hiveTable).size(), partColNames, expressions);
+		if (!filter.isPresent()) {
+			throw new UnsupportedOperationException(
+					"HiveCatalog is unable to handle the partition filter expressions: " + expressions);
+		}
+		try {
+			PartitionSpecProxy partitionSpec = client.listPartitionSpecsByFilter(
+					tablePath.getDatabaseName(), tablePath.getObjectName(), filter.get(), (short) -1);
+			List<CatalogPartitionSpec> res = new ArrayList<>(partitionSpec.size());
+			PartitionSpecProxy.PartitionIterator partitions = partitionSpec.getPartitionIterator();
+			while (partitions.hasNext()) {
+				Partition partition = partitions.next();
+				Map<String, String> spec = new HashMap<>();
+				for (int i = 0; i < partColNames.size(); i++) {
+					spec.put(partColNames.get(i), partition.getValues().get(i));
+				}
+				res.add(new CatalogPartitionSpec(spec));
+			}
+			return res;
+		} catch (TException e) {
+			throw new UnsupportedOperationException(
+					"Failed to list partition by filter from HMS, filter expressions: " + expressions, e);
+		}
 	}
 
 	@Override
